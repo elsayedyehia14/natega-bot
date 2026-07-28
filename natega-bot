@@ -1,0 +1,76 @@
+import os
+import cloudscraper
+from bs4 import BeautifulSoup
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
+TOKEN = os.getenv("TOKEN")
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("أهلاً بيك\nابعتلي رقم الجلوس وهجيبلك نتيجة الثانوية العامة.")
+
+async def get_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    seating_no = update.message.text.strip()
+
+    if not seating_no.isdigit() or len(seating_no) < 6:
+        await update.message.reply_text("من فضلك ابعت رقم جلوس صحيح.")
+        return
+
+    await update.message.reply_text("جاري البحث عن النتيجة... استنى شوية")
+
+    try:
+        scraper = cloudscraper.create_scraper()
+        res = scraper.get("https://g12.emis.gov.eg/")
+        soup = BeautifulSoup(res.text, "html.parser")
+        
+        token = soup.find("input", {"name": "__RequestVerificationToken"})
+        if not token:
+            await update.message.reply_text("الموقع مش شغال حالياً.")
+            return
+        
+        token_value = token.get("value")
+
+        data = {
+            "SeatingNo": seating_no,
+            "__RequestVerificationToken": token_value
+        }
+
+        res = scraper.post("https://g12.emis.gov.eg/", data=data)
+        soup = BeautifulSoup(res.text, "html.parser")
+
+        result_text = ""
+        tables = soup.find_all("table")
+        
+        if tables:
+            for table in tables:
+                rows = table.find_all("tr")
+                for row in rows:
+                    cols = row.find_all(["td", "th"])
+                    if cols:
+                        line = " | ".join([col.get_text(strip=True) for col in cols])
+                        result_text += line + "\n"
+        
+        if not result_text.strip():
+            body = soup.get_text(separator="\n", strip=True)
+            if "لا يوجد" in body or "غير موجود" in body or "خطأ" in body:
+                result_text = "مفيش نتيجة بالرقم ده"
+            else:
+                result_text = body[:1500]
+
+        if result_text.strip():
+            await update.message.reply_text(f"نتيجة رقم الجلوس {seating_no}:\n\n{result_text[:3500]}")
+        else:
+            await update.message.reply_text("مقدرتش أطلع النتيجة")
+
+    except Exception as e:
+        await update.message.reply_text(f"حصل خطأ:\n{str(e)}")
+
+def main():
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, get_result))
+    print("البوت شغال...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
